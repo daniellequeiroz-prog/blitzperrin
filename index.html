@@ -1194,15 +1194,72 @@
     });
   }
 
-  // Escrita via Image().src (fire-and-forget, também contorna CORS — não lemos a resposta)
+  // Escrita "fire-and-forget" (não esperamos nem lemos a resposta).
+  // sendBeacon é o método correto pra isso: mais confiável que Image().src
+  // e menos propenso a ser bloqueado por bloqueadores de anúncio.
   function enviarSemEsperar(params){
     if(!APPS_SCRIPT_URL || APPS_SCRIPT_URL.indexOf('COLE_AQUI') === 0){
       statusTexto.textContent = 'Configure a APPS_SCRIPT_URL no código antes de usar.';
       return;
     }
     const query = Object.keys(params).map(k => k + '=' + encodeURIComponent(params[k])).join('&');
-    const img = new Image();
-    img.src = APPS_SCRIPT_URL + '?' + query + '&_=' + Date.now();
+    const url = APPS_SCRIPT_URL + '?' + query;
+
+    if(navigator.sendBeacon){
+      navigator.sendBeacon(url);
+    } else {
+      // navegadores muito antigos, sem suporte a sendBeacon
+      const img = new Image();
+      img.src = url + '&_=' + Date.now();
+    }
+  }
+
+  // Protege marcações e comentários recém-feitos de serem "desfeitos" por uma
+  // leitura automática que ainda não enxergou a escrita (corrida de dados).
+  const JANELA_PROTECAO_MS = 15000;
+  let tarefasPendentes = {}; // taskId -> timestamp da última alteração local
+  let comentariosPendentes = {}; // comentarioId -> timestamp da última alteração local
+
+  function mesclarComProtecao(estadoServidor){
+    const agora = Date.now();
+    Object.keys(tarefasPendentes).forEach(id => {
+      if(agora - tarefasPendentes[id] < JANELA_PROTECAO_MS){
+        if(estado[id] !== undefined){
+          estadoServidor[id] = estado[id]; // preserva marcação local recente
+        } else {
+          delete estadoServidor[id]; // preserva desmarcação local recente
+        }
+      } else {
+        delete tarefasPendentes[id];
+      }
+    });
+    return estadoServidor;
+  }
+
+  function mesclarComentariosComProtecao(comentariosServidor){
+    const agora = Date.now();
+    Object.keys(comentariosPendentes).forEach(id => {
+      if(agora - comentariosPendentes[id] < JANELA_PROTECAO_MS){
+        // garante que o comentário recém-criado/excluído localmente não suma
+        // nem reapareça por causa de uma leitura desatualizada
+        Object.keys(comentarios).forEach(fi => {
+          const localItem = (comentarios[fi] || []).find(c => c.id === id);
+          if(localItem){
+            if(!comentariosServidor[fi]) comentariosServidor[fi] = [];
+            if(!comentariosServidor[fi].some(c => c.id === id)){
+              comentariosServidor[fi].push(localItem);
+            }
+          } else {
+            Object.keys(comentariosServidor).forEach(fi2 => {
+              comentariosServidor[fi2] = (comentariosServidor[fi2] || []).filter(c => c.id !== id);
+            });
+          }
+        });
+      } else {
+        delete comentariosPendentes[id];
+      }
+    });
+    return comentariosServidor;
   }
 
   async function carregarDoServidor(silencioso){
@@ -1214,8 +1271,8 @@
     try{
       const url = APPS_SCRIPT_URL + '?action=estado&blitzId=' + encodeURIComponent(BLITZ_ID);
       const dados = await jsonp(url);
-      estado = dados.tarefas || {};
-      comentarios = dados.comentarios || {};
+      estado = mesclarComProtecao(dados.tarefas || {});
+      comentarios = mesclarComentariosComProtecao(dados.comentarios || {});
       statusTexto.textContent = 'Atualizado agora · dados compartilhados com toda a equipe';
     }catch(e){
       statusTexto.textContent = 'Não foi possível atualizar — verifique sua conexão.';
@@ -1239,6 +1296,7 @@
       } else {
         delete estado[id];
       }
+      tarefasPendentes[id] = Date.now();
       aplicarEstadoNaTela();
       statusTexto.textContent = 'Salvando…';
       enviarSemEsperar({
@@ -1336,6 +1394,7 @@
         const fi2 = parseInt(btn.dataset.faseIdx, 10);
         const id2 = btn.dataset.id;
         comentarios[fi2] = (comentarios[fi2] || []).filter(c => c.id !== id2);
+        comentariosPendentes[id2] = Date.now();
         renderComentarios(fi2);
         enviarSemEsperar({
           action: 'excluirComentario',
@@ -1369,6 +1428,7 @@
       const data = formatarData();
       if(!comentarios[fi]) comentarios[fi] = [];
       comentarios[fi].push({ id: id, nome: nomeAtual, data: data, texto: texto });
+      comentariosPendentes[id] = Date.now();
       textarea.value = '';
       renderComentarios(fi);
       enviarSemEsperar({
