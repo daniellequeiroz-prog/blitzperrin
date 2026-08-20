@@ -1157,18 +1157,26 @@
       const script = document.createElement('script');
       let finalizado = false;
 
+      function limpar(){
+        // Substitui por uma função vazia em vez de apagar — se a resposta
+        // do Apps Script chegar atrasada (ele pode demorar pra "acordar"),
+        // isso evita um erro de "função não definida" no console.
+        window[nomeCallback] = function(){};
+        script.remove();
+      }
+
       window[nomeCallback] = (dados) => {
+        if(finalizado) return;
         finalizado = true;
         resolve(dados);
-        delete window[nomeCallback];
-        script.remove();
+        limpar();
       };
 
       script.onerror = () => {
         if(!finalizado){
+          finalizado = true;
           reject(new Error('Falha ao carregar dados do servidor'));
-          delete window[nomeCallback];
-          script.remove();
+          limpar();
         }
       };
 
@@ -1178,11 +1186,11 @@
 
       setTimeout(() => {
         if(!finalizado){
+          finalizado = true;
           reject(new Error('Tempo esgotado ao carregar dados'));
-          delete window[nomeCallback];
-          script.remove();
+          limpar();
         }
-      }, 10000);
+      }, 20000);
     });
   }
 
